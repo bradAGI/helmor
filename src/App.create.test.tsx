@@ -9,7 +9,6 @@ const apiMocks = vi.hoisted(() => ({
 	loadWorkspaceDetail: vi.fn(),
 	loadWorkspaceSessions: vi.fn(),
 	loadSessionThreadMessages: vi.fn(),
-	loadSessionAttachments: vi.fn(),
 	loadRepoScripts: vi.fn(),
 	listRepositories: vi.fn(),
 	createWorkspaceFromRepo: vi.fn(),
@@ -40,7 +39,6 @@ vi.mock("./lib/api", async (importOriginal) => {
 		loadWorkspaceSessions: apiMocks.loadWorkspaceSessions,
 		loadSessionMessages: apiMocks.loadSessionThreadMessages,
 		loadSessionThreadMessages: apiMocks.loadSessionThreadMessages,
-		loadSessionAttachments: apiMocks.loadSessionAttachments,
 		loadRepoScripts: apiMocks.loadRepoScripts,
 		listRepositories: apiMocks.listRepositories,
 		createWorkspaceFromRepo: apiMocks.createWorkspaceFromRepo,
@@ -63,7 +61,6 @@ describe("App create workspace flow", () => {
 		apiMocks.loadWorkspaceDetail.mockReset();
 		apiMocks.loadWorkspaceSessions.mockReset();
 		apiMocks.loadSessionThreadMessages.mockReset();
-		apiMocks.loadSessionAttachments.mockReset();
 		apiMocks.loadRepoScripts.mockReset();
 		apiMocks.loadRepoScripts.mockResolvedValue({
 			setupScript: null,
@@ -133,7 +130,6 @@ describe("App create workspace flow", () => {
 						state: "ready",
 						hasUnread: false,
 						workspaceUnread: 0,
-						sessionUnreadTotal: 0,
 						unreadSessionCount: 0,
 						derivedStatus: "in-progress",
 						manualStatus: null,
@@ -144,14 +140,11 @@ describe("App create workspace flow", () => {
 						branch: "testuser/acamar",
 						initializationParentBranch: "main",
 						intendedTargetBranch: "main",
-						notes: null,
 						pinnedAt: null,
 						prTitle: null,
-						prDescription: null,
 						archiveCommit: null,
 						sessionCount: 1,
 						messageCount: 0,
-						attachmentCount: 0,
 					};
 				}
 
@@ -164,7 +157,6 @@ describe("App create workspace flow", () => {
 					state: "ready",
 					hasUnread: false,
 					workspaceUnread: 0,
-					sessionUnreadTotal: 0,
 					unreadSessionCount: 0,
 					derivedStatus: "in-progress",
 					manualStatus: null,
@@ -175,14 +167,11 @@ describe("App create workspace flow", () => {
 					branch: "main",
 					initializationParentBranch: "main",
 					intendedTargetBranch: "main",
-					notes: null,
 					pinnedAt: null,
 					prTitle: null,
-					prDescription: null,
 					archiveCommit: null,
 					sessionCount: 1,
 					messageCount: 0,
-					attachmentCount: 0,
 				};
 			},
 		);
@@ -204,18 +193,12 @@ describe("App create workspace flow", () => {
 							permissionMode: "default",
 							providerSessionId: null,
 							unreadCount: 0,
-							contextTokenCount: 0,
-							contextUsedPercent: null,
-							thinkingEnabled: true,
 							codexThinkingLevel: null,
 							fastMode: false,
-							agentPersonality: null,
 							createdAt: "2026-04-03T00:00:00Z",
 							updatedAt: "2026-04-03T00:00:00Z",
 							lastUserMessageAt: null,
-							resumeSessionAt: null,
 							isHidden: false,
-							isCompacting: false,
 							active: true,
 						},
 					];
@@ -232,25 +215,18 @@ describe("App create workspace flow", () => {
 						permissionMode: "default",
 						providerSessionId: null,
 						unreadCount: 0,
-						contextTokenCount: 0,
-						contextUsedPercent: null,
-						thinkingEnabled: true,
 						codexThinkingLevel: null,
 						fastMode: false,
-						agentPersonality: null,
 						createdAt: "2026-04-03T00:00:00Z",
 						updatedAt: "2026-04-03T00:00:00Z",
 						lastUserMessageAt: null,
-						resumeSessionAt: null,
 						isHidden: false,
-						isCompacting: false,
 						active: true,
 					},
 				];
 			},
 		);
 		apiMocks.loadSessionThreadMessages.mockResolvedValue([]);
-		apiMocks.loadSessionAttachments.mockResolvedValue([]);
 		apiMocks.prepareWorkspaceFromRepo.mockReset();
 		apiMocks.finalizeWorkspaceFromRepo.mockReset();
 		apiMocks.prepareWorkspaceFromRepo.mockImplementation(async () => {

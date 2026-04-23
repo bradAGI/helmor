@@ -18,10 +18,19 @@ export interface SendMessageParams {
 	readonly permissionMode: string | undefined;
 	readonly effortLevel: string | undefined;
 	readonly fastMode: boolean | undefined;
+	/**
+	 * Extra directories the user linked via `/add-dir`. Passed to Claude as
+	 * `additionalDirectories`; merged into Codex's per-turn `sandboxPolicy`
+	 * writable roots when the session is in plan mode. Absent for sessions
+	 * with no linked dirs so callers don't need to hand-populate empty
+	 * arrays everywhere.
+	 */
+	readonly additionalDirectories?: readonly string[];
 }
 
 export interface ListSlashCommandsParams {
 	readonly cwd: string | undefined;
+	readonly additionalDirectories?: readonly string[];
 }
 
 /**
@@ -95,6 +104,7 @@ export interface SessionManager {
 	generateTitle(
 		requestId: string,
 		userMessage: string,
+		branchRenamePrompt: string | null,
 		emitter: SidecarEmitter,
 		timeoutMs?: number,
 	): Promise<void>;

@@ -15,6 +15,7 @@ import {
 } from "./codex-app-server.js";
 import type { SidecarEmitter } from "./emitter.js";
 import { parseImageRefs } from "./images.js";
+import { prependLinkedDirectoriesContext } from "./linked-directories-context.js";
 import { errorDetails, logger } from "./logger.js";
 import { sortCodexModels } from "./model-sort.js";
 import {
@@ -204,6 +205,7 @@ export class CodexAppServerManager implements SessionManager {
 			effortLevel,
 			permissionMode,
 			fastMode,
+			additionalDirectories,
 		} = params;
 		const workDir = cwd ?? process.cwd();
 		const effectiveFastMode = fastMode === true && codexSupportsFastMode(model);
@@ -225,7 +227,19 @@ export class CodexAppServerManager implements SessionManager {
 			effectiveFastMode,
 		);
 
-		const input = buildTurnInput(prompt);
+		// Codex, unlike Claude, has no `additionalDirectoriesForClaudeMd`
+		// equivalent — `sandboxPolicy.writableRoots` only grants write
+		// permission, it doesn't tell the agent "these paths are part of
+		// your working context". To close that gap we prepend a small
+		// context preamble to the user's prompt when there are linked
+		// directories, so Codex knows it can reach into them without the
+		// user re-stating paths every turn. Claude doesn't need this
+		// because `--add-dir` covers both facets in the CLI.
+		const promptWithContext = prependLinkedDirectoriesContext(
+			prompt,
+			additionalDirectories,
+		);
+		const input = buildTurnInput(promptWithContext);
 		const turnStartParams: Record<string, unknown> = {
 			threadId: ctx.providerThreadId,
 			input,
@@ -237,6 +251,30 @@ export class CodexAppServerManager implements SessionManager {
 		if (codexMode) turnStartParams.collaborationMode = codexMode;
 		const codexApproval = toCodexApprovalPolicy(permissionMode);
 		if (codexApproval) turnStartParams.approvalPolicy = codexApproval;
+		// Plan mode is the only sandbox-relevant path: thread/start puts
+		// Codex in `workspace-write` so only cwd is writable. Any directories
+		// the user linked via /add-dir need to be added as writable roots or
+		// Codex will reject edits outside cwd. Non-plan modes run as
+		// `danger-full-access`, where writable roots have no effect.
+		//
+		// Per Codex v0.121 `SandboxPolicy::WorkspaceWrite` semantics,
+		// `workspaceWrite` already implies cwd is writable — `writableRoots`
+		// is supposed to be "additional folders beyond cwd". We still
+		// prepend cwd defensively so a future Codex change or a per-turn
+		// override that interacts unexpectedly with the thread default
+		// can't silently strip cwd from the writable set.
+		const writableRoots = buildPlanModeWritableRoots(
+			permissionMode,
+			workDir,
+			additionalDirectories,
+		);
+		if (writableRoots) {
+			turnStartParams.sandboxPolicy = {
+				type: "workspaceWrite",
+				writableRoots,
+				networkAccess: false,
+			};
+		}
 
 		let aborted = false;
 
@@ -405,6 +443,7 @@ export class CodexAppServerManager implements SessionManager {
 	async generateTitle(
 		requestId: string,
 		userMessage: string,
+		branchRenamePrompt: string | null,
 		emitter: SidecarEmitter,
 		timeoutMs = TITLE_GENERATION_TIMEOUT_MS,
 	): Promise<void> {
@@ -460,7 +499,7 @@ export class CodexAppServerManager implements SessionManager {
 				input: [
 					{
 						type: "text",
-						text: buildTitlePrompt(userMessage),
+						text: buildTitlePrompt(userMessage, branchRenamePrompt),
 						text_elements: [],
 					},
 				],
@@ -965,4 +1004,40 @@ function toCodexApprovalPolicy(
 	if (permissionMode === "acceptEdits") return "untrusted";
 	// plan mode: don't override — Codex plan mode is inherently read-only
 	return undefined;
+}
+
+/**
+ * Build the `sandboxPolicy.writableRoots` override for Codex when the user
+ * has linked extra directories in plan mode. Returns `undefined` unless
+ * plan mode is active AND the user has at least one non-empty entry —
+ * non-plan modes already run with `danger-full-access` where writable
+ * roots are meaningless.
+ *
+ * `cwd` is prepended to the returned list so the current workspace always
+ * stays writable even if a future Codex version stops treating
+ * `WorkspaceWrite` as implicitly including cwd. Duplicates and empty
+ * values are dropped.
+ */
+export function buildPlanModeWritableRoots(
+	permissionMode: string | undefined,
+	cwd: string | undefined,
+	additionalDirectories: readonly string[] | undefined,
+): string[] | undefined {
+	if (permissionMode !== "plan") return undefined;
+	if (!additionalDirectories || additionalDirectories.length === 0)
+		return undefined;
+	const seen = new Set<string>();
+	const out: string[] = [];
+	const cwdTrimmed = cwd?.trim();
+	if (cwdTrimmed) {
+		seen.add(cwdTrimmed);
+		out.push(cwdTrimmed);
+	}
+	for (const raw of additionalDirectories) {
+		const trimmed = raw.trim();
+		if (!trimmed || seen.has(trimmed)) continue;
+		seen.add(trimmed);
+		out.push(trimmed);
+	}
+	return out.length > 0 ? out : undefined;
 }

@@ -45,6 +45,34 @@ const emitter = createSidecarEmitter((event) => {
 });
 
 // ---------------------------------------------------------------------------
+// Heartbeat — emit a lightweight keepalive every 15s for every in-flight
+// stream request. Rust's streaming loop uses its absence (no event for
+// >45s) to distinguish "sidecar frozen" from "AI legitimately running a
+// long tool call". Heartbeats carry no payload beyond the request id.
+// ---------------------------------------------------------------------------
+
+const HEARTBEAT_INTERVAL_MS = 15_000;
+const activeStreamIds = new Set<string>();
+let heartbeatTickCount = 0;
+
+setInterval(() => {
+	heartbeatTickCount++;
+	if (activeStreamIds.size === 0) return;
+	// Log every tick at debug so the logs show heartbeats are flowing.
+	logger.debug(
+		`heartbeat tick #${heartbeatTickCount} for ${activeStreamIds.size} active stream(s)`,
+		{ ids: [...activeStreamIds] },
+	);
+	for (const id of activeStreamIds) {
+		try {
+			emitter.heartbeat(id);
+		} catch {
+			// stdout closed — nothing to do
+		}
+	}
+}, HEARTBEAT_INTERVAL_MS).unref();
+
+// ---------------------------------------------------------------------------
 // Global error recovery — the sidecar must never crash from unhandled errors.
 // Log to stderr so Rust can capture it, emit a protocol error event so any
 // in-flight request gets notified, and keep the process alive.
@@ -80,6 +108,10 @@ async function handleSendMessage(
 	id: string,
 	params: Record<string, unknown>,
 ): Promise<void> {
+	activeStreamIds.add(id);
+	logger.debug(
+		`[${id}] stream tracking: +1 (now ${activeStreamIds.size} active)`,
+	);
 	try {
 		const provider = parseProvider(params.provider);
 		const sendParams = parseSendMessageParams(params);
@@ -99,6 +131,11 @@ async function handleSendMessage(
 		const msg = errorMessage(err);
 		logger.error(`[${id}] sendMessage FAILED: ${msg}`, errorDetails(err));
 		emitter.error(id, msg);
+	} finally {
+		activeStreamIds.delete(id);
+		logger.debug(
+			`[${id}] stream tracking: -1 (now ${activeStreamIds.size} active)`,
+		);
 	}
 }
 
@@ -108,6 +145,10 @@ async function handleGenerateTitle(
 ): Promise<void> {
 	try {
 		const userMessage = requireString(params, "userMessage");
+		const branchRenamePrompt =
+			typeof params.branchRenamePrompt === "string"
+				? params.branchRenamePrompt
+				: null;
 		logger.debug(`[${id}] generateTitle`, {
 			userMessage: userMessage.slice(0, 100),
 		});
@@ -119,6 +160,7 @@ async function handleGenerateTitle(
 			await managers.claude.generateTitle(
 				id,
 				userMessage,
+				branchRenamePrompt,
 				emitter,
 				TITLE_GENERATION_TIMEOUT_MS,
 			);
@@ -130,6 +172,7 @@ async function handleGenerateTitle(
 			await managers.codex.generateTitle(
 				id,
 				userMessage,
+				branchRenamePrompt,
 				emitter,
 				TITLE_GENERATION_FALLBACK_TIMEOUT_MS,
 			);

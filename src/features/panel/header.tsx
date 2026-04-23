@@ -42,6 +42,7 @@ import {
 	prefetchRemoteRefs,
 	renameSession,
 	renameWorkspaceBranch,
+	stopAgentStream,
 	unhideSession,
 	updateIntendedTargetBranch,
 	type WorkspaceDetail,
@@ -54,6 +55,7 @@ import {
 	type WorkspaceBranchTone,
 } from "@/lib/workspace-helpers";
 import { useWorkspaceToast } from "@/lib/workspace-toast-context";
+import { RunningSessionCloseDialog } from "./running-session-close-dialog";
 import { seedNewSessionInCache } from "./session-cache";
 import { closeWorkspaceSession } from "./session-close";
 
@@ -65,7 +67,6 @@ type WorkspacePanelHeaderProps = {
 	sessionDisplayProviders?: Record<string, AgentProvider>;
 	sending: boolean;
 	sendingSessionIds?: Set<string>;
-	completedSessionIds?: Set<string>;
 	interactionRequiredSessionIds?: Set<string>;
 	loadingWorkspace: boolean;
 	headerActions?: React.ReactNode;
@@ -85,7 +86,6 @@ export const WorkspacePanelHeader = memo(function WorkspacePanelHeader({
 	sessionDisplayProviders,
 	sending,
 	sendingSessionIds,
-	completedSessionIds,
 	interactionRequiredSessionIds,
 	loadingWorkspace,
 	headerActions,
@@ -123,6 +123,18 @@ export const WorkspacePanelHeader = memo(function WorkspacePanelHeader({
 	const [branchCopied, setBranchCopied] = useState(false);
 	const tabsScrollRef = useRef<HTMLDivElement>(null);
 	const [hasRightOverflow, setHasRightOverflow] = useState(false);
+	const [confirmCloseSessionId, setConfirmCloseSessionId] = useState<
+		string | null
+	>(null);
+	const [confirmCloseLoading, setConfirmCloseLoading] = useState(false);
+
+	const confirmCloseSession =
+		sessions.find((session) => session.id === confirmCloseSessionId) ?? null;
+	const confirmCloseProvider =
+		(confirmCloseSession
+			? (sessionDisplayProviders?.[confirmCloseSession.id] ??
+				confirmCloseSession.agentType)
+			: null) ?? null;
 
 	const updateOverflow = useCallback(() => {
 		const el = tabsScrollRef.current;
@@ -215,6 +227,11 @@ export const WorkspacePanelHeader = memo(function WorkspacePanelHeader({
 				return;
 			}
 
+			if (sendingSessionIds?.has(sessionId)) {
+				setConfirmCloseSessionId(sessionId);
+				return;
+			}
+
 			await closeWorkspaceSession({
 				queryClient,
 				workspace,
@@ -230,10 +247,56 @@ export const WorkspacePanelHeader = memo(function WorkspacePanelHeader({
 			onSessionsChanged,
 			pushToast,
 			queryClient,
+			sendingSessionIds,
 			sessions,
 			workspace,
 		],
 	);
+
+	const handleConfirmCloseSession = useCallback(async () => {
+		if (!workspace || !confirmCloseSession) {
+			return;
+		}
+
+		const provider =
+			sessionDisplayProviders?.[confirmCloseSession.id] ??
+			confirmCloseSession.agentType ??
+			undefined;
+
+		setConfirmCloseLoading(true);
+		try {
+			await stopAgentStream(confirmCloseSession.id, provider);
+		} catch (error) {
+			pushToast(
+				error instanceof Error ? error.message : String(error),
+				"Unable to stop chat",
+				"destructive",
+			);
+			setConfirmCloseLoading(false);
+			return;
+		}
+
+		setConfirmCloseSessionId(null);
+		setConfirmCloseLoading(false);
+		await closeWorkspaceSession({
+			queryClient,
+			workspace,
+			sessions,
+			sessionId: confirmCloseSession.id,
+			onSelectSession,
+			onSessionsChanged,
+			pushToast,
+		});
+	}, [
+		confirmCloseSession,
+		onSelectSession,
+		onSessionsChanged,
+		pushToast,
+		queryClient,
+		sessionDisplayProviders,
+		sessions,
+		workspace,
+	]);
 
 	const handleToggleHistory = useCallback(
 		async (open: boolean) => {
@@ -442,6 +505,12 @@ export const WorkspacePanelHeader = memo(function WorkspacePanelHeader({
 										void updateIntendedTargetBranch(workspace.id, branch)
 											.then(({ reset }) => {
 												onWorkspaceChanged?.();
+												// Recompute sync status vs. new target now; don't wait for 10s poll.
+												void queryClient.invalidateQueries({
+													queryKey: helmorQueryKeys.workspaceGitActionStatus(
+														workspace.id,
+													),
+												});
 												if (workspace.rootPath) {
 													void queryClient.invalidateQueries({
 														queryKey: helmorQueryKeys.workspaceChanges(
@@ -524,15 +593,12 @@ export const WorkspacePanelHeader = memo(function WorkspacePanelHeader({
 											? sendingSessionIds.has(session.id)
 											: selected && sending;
 										const hasUnread = session.unreadCount > 0;
-										const isCompleted =
-											completedSessionIds?.has(session.id) ?? false;
 										const isInteractionRequired =
 											interactionRequiredSessionIds?.has(session.id) ?? false;
 										const isActive =
 											isActivelySending && !isInteractionRequired;
 										const hasStatusDot =
-											isInteractionRequired ||
-											(!selected && (hasUnread || isCompleted));
+											isInteractionRequired || (!selected && hasUnread);
 										const isEditing = editingSessionId === session.id;
 
 										return (
@@ -594,9 +660,7 @@ export const WorkspacePanelHeader = memo(function WorkspacePanelHeader({
 																	aria-label={
 																		isInteractionRequired
 																			? "Interaction required"
-																			: isCompleted
-																				? "Session completed"
-																				: "Unread session"
+																			: "Unread session"
 																	}
 																	className={cn(
 																		"size-1.5 shrink-0 rounded-full",
@@ -735,6 +799,18 @@ export const WorkspacePanelHeader = memo(function WorkspacePanelHeader({
 					</DropdownMenuContent>
 				</DropdownMenu>
 			</div>
+			<RunningSessionCloseDialog
+				open={confirmCloseSession !== null}
+				agentLabel={confirmCloseProvider === "codex" ? "Codex" : "Claude"}
+				loading={confirmCloseLoading}
+				onOpenChange={(open) => {
+					if (confirmCloseLoading || open) {
+						return;
+					}
+					setConfirmCloseSessionId(null);
+				}}
+				onConfirm={() => void handleConfirmCloseSession()}
+			/>
 		</header>
 	);
 });

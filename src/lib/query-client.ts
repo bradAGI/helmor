@@ -8,13 +8,14 @@ import {
 	detectInstalledEditors,
 	listRepositories,
 	listSlashCommands,
+	listWorkspaceCandidateDirectories,
 	listWorkspaceChangesWithContent,
 	listWorkspaceFiles,
+	listWorkspaceLinkedDirectories,
 	loadAgentModelSections,
 	loadArchivedWorkspaces,
 	loadAutoCloseActionKinds,
 	loadAutoCloseOptInAsked,
-	loadSessionAttachments,
 	loadSessionThreadMessages,
 	loadWorkspaceDetail,
 	loadWorkspaceGitActionStatus,
@@ -25,6 +26,11 @@ import {
 	type PullRequestInfo,
 	type WorkspacePrActionStatus,
 } from "./api";
+import {
+	hasUsableAgentModelSections,
+	readCachedAgentModelSections,
+	writeCachedAgentModelSections,
+} from "./model-catalog-cache";
 
 const SESSION_STALE_TIME = 10 * 60_000;
 const CHANGES_STALE_TIME = 3_000;
@@ -44,8 +50,6 @@ export const helmorQueryKeys = {
 		["workspaceSessions", workspaceId] as const,
 	sessionMessages: (sessionId: string) =>
 		["sessionMessages", sessionId] as const,
-	sessionAttachments: (sessionId: string) =>
-		["sessionAttachments", sessionId] as const,
 	workspaceChanges: (workspaceRootPath: string) =>
 		["workspaceChanges", workspaceRootPath] as const,
 	workspaceFiles: (workspaceRootPath: string) =>
@@ -57,11 +61,25 @@ export const helmorQueryKeys = {
 		["workspacePrActionStatus", workspaceId] as const,
 	repoScripts: (repoId: string, workspaceId: string | null) =>
 		["repoScripts", repoId, workspaceId ?? ""] as const,
+	repoPreferences: (repoId: string) => ["repoPreferences", repoId] as const,
 	autoCloseActionKinds: ["autoCloseActionKinds"] as const,
 	autoCloseOptInAsked: ["autoCloseOptInAsked"] as const,
 	detectedEditors: ["detectedEditors"] as const,
-	slashCommands: (provider: AgentProvider, workingDirectory: string | null) =>
-		["slashCommands", provider, workingDirectory ?? ""] as const,
+	slashCommands: (
+		provider: AgentProvider,
+		workingDirectory: string | null,
+		workspaceId: string | null,
+	) =>
+		[
+			"slashCommands",
+			provider,
+			workingDirectory ?? "",
+			workspaceId ?? "",
+		] as const,
+	workspaceLinkedDirectories: (workspaceId: string) =>
+		["workspaceLinkedDirectories", workspaceId] as const,
+	workspaceCandidateDirectories: (excludeWorkspaceId: string | null) =>
+		["workspaceCandidateDirectories", excludeWorkspaceId ?? ""] as const,
 };
 
 export function createHelmorQueryClient() {
@@ -140,9 +158,19 @@ export function repositoriesQueryOptions() {
 }
 
 export function agentModelSectionsQueryOptions() {
+	const cached = readCachedAgentModelSections();
 	return queryOptions({
 		queryKey: helmorQueryKeys.agentModelSections,
-		queryFn: loadAgentModelSections,
+		queryFn: async () => {
+			const fresh = await loadAgentModelSections();
+			if (hasUsableAgentModelSections(fresh)) {
+				writeCachedAgentModelSections(fresh);
+				return fresh;
+			}
+			return cached ?? fresh;
+		},
+		initialData: cached,
+		initialDataUpdatedAt: cached ? Date.now() : undefined,
 		staleTime: Infinity,
 		refetchOnWindowFocus: false,
 		retry: 2,
@@ -165,6 +193,30 @@ export function workspaceSessionsQueryOptions(workspaceId: string) {
 	});
 }
 
+/** `/add-dir` linked directories, workspace-scoped. */
+export function workspaceLinkedDirectoriesQueryOptions(workspaceId: string) {
+	return queryOptions({
+		queryKey: helmorQueryKeys.workspaceLinkedDirectories(workspaceId),
+		queryFn: () => listWorkspaceLinkedDirectories(workspaceId),
+		staleTime: 0,
+	});
+}
+
+/**
+ * Candidate directories shown as quick-pick suggestions in the /add-dir
+ * popup. Staled quickly so newly-created workspaces show up on the next
+ * popup open without a manual refresh.
+ */
+export function workspaceCandidateDirectoriesQueryOptions(
+	excludeWorkspaceId: string | null,
+) {
+	return queryOptions({
+		queryKey: helmorQueryKeys.workspaceCandidateDirectories(excludeWorkspaceId),
+		queryFn: () => listWorkspaceCandidateDirectories({ excludeWorkspaceId }),
+		staleTime: 0,
+	});
+}
+
 /** Pipeline-rendered thread messages — ready for direct rendering. */
 export function sessionThreadMessagesQueryOptions(sessionId: string) {
 	return queryOptions({
@@ -175,27 +227,24 @@ export function sessionThreadMessagesQueryOptions(sessionId: string) {
 	});
 }
 
-export function sessionAttachmentsQueryOptions(sessionId: string) {
-	return queryOptions({
-		queryKey: helmorQueryKeys.sessionAttachments(sessionId),
-		queryFn: () => loadSessionAttachments(sessionId),
-		gcTime: SESSION_GC_TIME,
-		staleTime: 60_000,
-	});
-}
-
 export function slashCommandsQueryOptions(
 	provider: AgentProvider,
 	workingDirectory: string | null,
 	repoId: string | null,
+	workspaceId: string | null,
 ) {
 	return queryOptions({
-		queryKey: helmorQueryKeys.slashCommands(provider, workingDirectory),
+		queryKey: helmorQueryKeys.slashCommands(
+			provider,
+			workingDirectory,
+			workspaceId,
+		),
 		queryFn: () =>
 			listSlashCommands({
 				provider,
 				workingDirectory,
 				repoId,
+				workspaceId,
 			}),
 		// The backend owns slash-command caching and background refresh. Keep
 		// the frontend layer as a thin request shell only.

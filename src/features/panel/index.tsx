@@ -2,7 +2,6 @@ import { memo, type ReactNode, useEffect } from "react";
 import type {
 	AgentProvider,
 	PullRequestInfo,
-	SessionAttachmentRecord,
 	WorkspaceDetail,
 	WorkspaceSessionSummary,
 } from "@/lib/api";
@@ -29,14 +28,12 @@ type WorkspacePanelProps = {
 	selectedSessionId: string | null;
 	sessionDisplayProviders?: Record<string, AgentProvider>;
 	sessionPanes: PresentedSessionPane[];
-	attachments?: SessionAttachmentRecord[];
 	loadingWorkspace?: boolean;
 	loadingSession?: boolean;
 	refreshingWorkspace?: boolean;
 	refreshingSession?: boolean;
 	sending?: boolean;
 	sendingSessionIds?: Set<string>;
-	completedSessionIds?: Set<string>;
 	interactionRequiredSessionIds?: Set<string>;
 	onSelectSession?: (sessionId: string) => void;
 	onPrefetchSession?: (sessionId: string) => void;
@@ -56,14 +53,12 @@ export const WorkspacePanel = memo(function WorkspacePanel({
 	selectedSessionId,
 	sessionDisplayProviders,
 	sessionPanes,
-	attachments: _attachments,
 	loadingWorkspace = false,
 	loadingSession = false,
 	refreshingWorkspace: _refreshingWorkspace = false,
 	refreshingSession: _refreshingSession = false,
 	sending = false,
 	sendingSessionIds,
-	completedSessionIds,
 	interactionRequiredSessionIds,
 	onSelectSession,
 	onPrefetchSession,
@@ -119,7 +114,6 @@ export const WorkspacePanel = memo(function WorkspacePanel({
 					sessionDisplayProviders={sessionDisplayProviders}
 					sending={sending}
 					sendingSessionIds={sendingSessionIds}
-					completedSessionIds={completedSessionIds}
 					interactionRequiredSessionIds={interactionRequiredSessionIds}
 					loadingWorkspace={loadingWorkspace}
 					headerActions={headerActions}

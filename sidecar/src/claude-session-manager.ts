@@ -22,9 +22,9 @@ import {
 	claudeModelSupportsFastMode,
 } from "./claude-model-overrides.js";
 import type { SidecarEmitter } from "./emitter.js";
-import { resolveGitAccessDirectories } from "./git-access.js";
 import { readImageWithResize } from "./image-resize.js";
 import { parseImageRefs } from "./images.js";
+import { prependLinkedDirectoriesContext } from "./linked-directories-context.js";
 import { errorDetails, logger } from "./logger.js";
 import { sortClaudeModels } from "./model-sort.js";
 import { createPushable, type Pushable } from "./pushable-iterable.js";
@@ -395,9 +395,17 @@ export class ClaudeSessionManager implements SessionManager {
 			fastMode,
 		} = params;
 		const abortController = new AbortController();
-		const additionalDirectories = await resolveGitAccessDirectories(cwd);
+		const additionalDirectories = [...(params.additionalDirectories ?? [])];
+		logger.info(`[${requestId}] claude additionalDirectories resolved`, {
+			directories: additionalDirectories,
+			cwd: cwd ?? "(none)",
+		});
+		const promptWithContext = prependLinkedDirectoriesContext(
+			prompt,
+			additionalDirectories,
+		);
 
-		const { text, imagePaths } = parseImageRefs(prompt);
+		const { text, imagePaths } = parseImageRefs(promptWithContext);
 		// Always use streaming-input mode so `steer()` can push additional
 		// `SDKUserMessage`s into the same turn. For Claude real steer, the
 		// SDK consumes subsequent pushes as part of the in-flight turn and
@@ -416,6 +424,10 @@ export class ClaudeSessionManager implements SessionManager {
 
 		const effectiveFastMode =
 			fastMode === true && claudeModelSupportsFastMode(model);
+		const additionalDirectoryEnv =
+			additionalDirectories.length > 0
+				? { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" }
+				: undefined;
 
 		const q = query({
 			prompt: promptSource,
@@ -425,6 +437,7 @@ export class ClaudeSessionManager implements SessionManager {
 				...executableOptions(),
 				cwd: cwd || undefined,
 				...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
+				...(additionalDirectoryEnv ? { env: additionalDirectoryEnv } : {}),
 				model: model || undefined,
 				...(resume ? { resume } : {}),
 				permissionMode: parsePermissionMode(permissionMode),
@@ -607,9 +620,16 @@ export class ClaudeSessionManager implements SessionManager {
 	 * streaming-input queue so the SDK folds it into the current extended
 	 * turn, and emit a `user_prompt` passthrough event so the accumulator
 	 * renders the user bubble at the correct position AND streaming.rs
-	 * persists it exactly once (no extra DB path). Event shape matches
-	 * what the adapter's `user_prompt` branch reads on reload so
-	 * live/reload rendering stay identical — `files` included.
+	 * persists it exactly once (no extra DB path).
+	 *
+	 * Event shape matches `persist_user_message`'s DB row exactly:
+	 * `{ type: "user_prompt", text: <raw prompt>, steer: true, files }`.
+	 * We emit the RAW prompt (not the image-stripped version), keeping
+	 * every `@/image.png` / `@src/foo.ts` / custom-tag sigil intact —
+	 * that's what the adapter's `split_user_text_with_files` relies on
+	 * to produce FileMention badges, and matches what a non-steer
+	 * initial prompt stores. The image stripping is ONLY used to build
+	 * the `SDKUserMessage` base64 image blocks we hand to the SDK.
 	 *
 	 * Two correctness properties this method enforces:
 	 *
@@ -640,15 +660,18 @@ export class ClaudeSessionManager implements SessionManager {
 			return false;
 		}
 
-		const { text, imagePaths } = parseImageRefs(prompt);
+		// Strip image refs to build the SDK's base64 image content. Keep
+		// the raw prompt separately — that's what the synthetic event +
+		// DB row need so `@-refs` survive the round-trip.
+		const { text: stripped, imagePaths } = parseImageRefs(prompt);
 		const sdkMessage =
 			imagePaths.length === 0
 				? ({
 						type: "user",
-						message: { role: "user", content: text },
+						message: { role: "user", content: prompt },
 						parent_tool_use_id: null,
 					} as SDKUserMessage)
-				: await buildUserMessageWithImages(text, imagePaths);
+				: await buildUserMessageWithImages(stripped, imagePaths);
 
 		// Re-check after the image-loading await — during those awaits
 		// the for-await loop may have hit the extended turn's single
@@ -663,13 +686,14 @@ export class ClaudeSessionManager implements SessionManager {
 			text: string;
 			steer: true;
 			files?: string[];
-		} = { type: "user_prompt", text, steer: true };
+		} = { type: "user_prompt", text: prompt, steer: true };
 		if (files.length > 0) event.files = [...files];
 		session.emitter.passthrough(session.requestId, event);
 		session.promptSource.push(sdkMessage);
 		logger.info(`steer ${sessionId}`, {
-			preview: text.slice(0, 60),
+			preview: prompt.slice(0, 60),
 			fileCount: files.length,
+			imageCount: imagePaths.length,
 		});
 		return true;
 	}
@@ -677,6 +701,7 @@ export class ClaudeSessionManager implements SessionManager {
 	async generateTitle(
 		requestId: string,
 		userMessage: string,
+		branchRenamePrompt: string | null,
 		emitter: SidecarEmitter,
 		timeoutMs = TITLE_GENERATION_TIMEOUT_MS,
 	): Promise<void> {
@@ -684,7 +709,7 @@ export class ClaudeSessionManager implements SessionManager {
 		const timeout = setTimeout(() => abortController.abort(), timeoutMs);
 
 		const q = query({
-			prompt: buildTitlePrompt(userMessage),
+			prompt: buildTitlePrompt(userMessage, branchRenamePrompt),
 			options: {
 				abortController,
 				pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
@@ -740,6 +765,11 @@ export class ClaudeSessionManager implements SessionManager {
 	): Promise<readonly SlashCommandInfo[]> {
 		const { cwd } = params;
 		const abortController = new AbortController();
+		const additionalDirectories = [...(params.additionalDirectories ?? [])];
+		const additionalDirectoryEnv =
+			additionalDirectories.length > 0
+				? { CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: "1" }
+				: undefined;
 
 		let resolveDone: () => void = () => undefined;
 		const donePromise = new Promise<void>((resolve) => {
@@ -767,6 +797,8 @@ export class ClaudeSessionManager implements SessionManager {
 				pathToClaudeCodeExecutable: CLAUDE_CLI_PATH,
 				...executableOptions(),
 				cwd: cwd || undefined,
+				...(additionalDirectories.length > 0 ? { additionalDirectories } : {}),
+				...(additionalDirectoryEnv ? { env: additionalDirectoryEnv } : {}),
 				permissionMode: "bypassPermissions",
 				allowDangerouslySkipPermissions: true,
 				includePartialMessages: false,
