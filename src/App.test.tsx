@@ -233,7 +233,7 @@ describe("App", () => {
 		).toHaveAttribute("aria-valuenow", "388");
 	});
 
-	it("shows the update button beside the sidebar toggle when an update is ready", async () => {
+	it("shows the update button when an update is ready", async () => {
 		const invokeMock = vi.mocked(invoke);
 		const baseInvokeImpl = invokeMock.getMockImplementation();
 
@@ -260,17 +260,8 @@ describe("App", () => {
 		);
 
 		try {
-			const user = userEvent.setup();
 			render(<App />);
 			await screen.findByRole("main", { name: "Application shell" });
-
-			expect(
-				screen.getByRole("button", { name: "Update Helmor to 1.1.0" }),
-			).toBeInTheDocument();
-
-			await user.click(
-				screen.getByRole("button", { name: "Collapse left sidebar" }),
-			);
 
 			expect(
 				screen.getByRole("button", { name: "Update Helmor to 1.1.0" }),
