@@ -188,6 +188,88 @@ describe("WorkspaceComposer — CJK IME composition", () => {
 		});
 	});
 
+	// 🔴 RED-LIGHT (TDD): macOS native Pinyin / Microsoft Pinyin / Sogou trailing-Enter race.
+	//
+	// Why this is a SEPARATE scenario from the keyCode=229 case above:
+	//
+	// The current guard in submit-plugin.tsx only fires when the keydown
+	// itself looks "IME-ish" (`event.isComposing === true` OR
+	// `event.keyCode === 229`). That covers Chrome on Linux/Windows with
+	// most pinyin IMEs, where the IME-confirming Enter arrives AS the
+	// `Process` keydown (keyCode=229) and `compositionend` fires AFTER.
+	//
+	// But on the platforms that actually drive this bug — macOS native
+	// 拼音 / 简体拼音, Microsoft Pinyin in WebView2, Sogou on WebKit —
+	// the order is reversed AND the residual keydown looks normal:
+	//
+	//   1. user is composing "nihao" → IME shows "你好" candidate
+	//   2. user presses Enter to commit
+	//   3. IME consumes the Enter → fires `compositionend("你好")` SYNCHRONOUSLY
+	//   4. the same Enter still bubbles up as a real `keydown` —
+	//      but now `event.isComposing === false` (composition just ended)
+	//      and `event.keyCode === 13` (the IME no longer "owns" it).
+	//
+	// At step 4 our guard does nothing, Lexical's `editor.isComposing()`
+	// is also already cleared by step 3, KEY_ENTER_COMMAND fires, and
+	// we accidentally send the message the user only meant to commit.
+	// This is the exact shape of the bug reported in:
+	//   https://github.com/open-webui/open-webui/issues/16608
+	//   https://github.com/jupyterlab/jupyter-ai/issues/1534
+	//   https://github.com/menloresearch/jan/pull/6109
+	// and described pithily as "missing composition state check" — the
+	// canonical fix tracks composition state in a ref (set on
+	// `compositionstart`, cleared async on `compositionend`) so the
+	// trailing keydown in step 4 still sees "we're composing" and bails.
+	//
+	// This test reproduces step-3-then-step-4 SYNCHRONOUSLY, the way
+	// the browser actually dispatches them. It must be RED today: the
+	// existing guard only inspects the keydown event itself, and at that
+	// moment the event has no IME signal left on it.
+	//
+	// (How does this differ from the "regression" test below it, which
+	// fires the SAME-looking events and expects submission? Timing.
+	// The regression test's contract is "user committed via mouse-click
+	// and then moved their hand to the keyboard" — a real human gap of
+	// 100ms+ between compositionend and keydown. The fix should
+	// distinguish the two by `Date.now() - lastCompositionEndAt < ~50ms`,
+	// or equivalently by an async-cleared composition-active ref. The
+	// regression test will then need to advance time / await a tick
+	// between the two events, which is the post-fix change.)
+	it("RED: does NOT submit when Enter that just committed an IME candidate fires a trailing keydown(13) right after compositionend (macOS native Pinyin / Microsoft Pinyin)", async () => {
+		const handleSubmit = vi.fn();
+		renderComposer({ onSubmit: handleSubmit });
+
+		await waitFor(() => {
+			expect(screen.getByLabelText("Send")).toBeEnabled();
+		});
+
+		const editor = screen.getByLabelText("Workspace input");
+
+		// Realistic macOS native Pinyin sequence for "press Enter to commit
+		// the highlighted candidate". The IME consumes the keystroke for
+		// commit (compositionend), but the same Enter still surfaces as a
+		// plain keydown immediately after — keyCode=13, isComposing=false.
+		fireEvent.compositionStart(editor, { data: "" });
+		fireEvent.compositionUpdate(editor, { data: "nihao" });
+		fireEvent.compositionEnd(editor, { data: "你好" });
+		// CRITICAL: synchronous, same tick as compositionend. No await,
+		// no setTimeout — this is what the browser actually does when a
+		// single Enter press both ends composition AND bubbles.
+		fireEvent.keyDown(editor, {
+			key: "Enter",
+			code: "Enter",
+			keyCode: 13,
+			isComposing: false,
+			bubbles: true,
+		});
+
+		// Give any async submit path a chance to flush so we don't get a
+		// false green from "test ended before the bug fired".
+		await new Promise((resolve) => setTimeout(resolve, 20));
+
+		expect(handleSubmit).not.toHaveBeenCalled();
+	});
+
 	// Regression guard for the upcoming IME fix in submit-plugin.tsx.
 	//
 	// The fix is one branch — `if (event?.isComposing || event?.keyCode === 229)
