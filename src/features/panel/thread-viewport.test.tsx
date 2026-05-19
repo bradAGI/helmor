@@ -31,7 +31,7 @@ function message(id: string, streaming = false): ThreadMessageLike {
 describe("ActiveThreadViewport", () => {
 	afterEach(() => cleanup());
 
-	it("keeps content-visibility disabled only for the streaming row", async () => {
+	it("keeps content-visibility disabled for conversation rows", async () => {
 		const messages = Array.from({ length: 13 }, (_, index) =>
 			message(`history-${index}`),
 		);
@@ -54,7 +54,7 @@ describe("ActiveThreadViewport", () => {
 		const historyRow = await screen.findByText("message history-0");
 		const streamingRow = await screen.findByText("message streaming-tail");
 
-		expect(historyRow.closest(".flow-root")).toHaveStyle({
+		expect(historyRow.closest(".flow-root")).not.toHaveStyle({
 			contentVisibility: "auto",
 		});
 		expect(streamingRow.closest(".flow-root")).not.toHaveStyle({
