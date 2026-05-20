@@ -1648,6 +1648,7 @@ function AppShell({
 														composerContextKeyOverride={startComposerContextKey}
 														composerPlaceholder="Describe what you want to build"
 														composerCreateContext={startCreateContext}
+														composerFocusScope="start-composer"
 														contextPanelOpen={contextPanelOpen}
 														onToggleContextPanel={handleToggleContextPanel}
 														composerStartSubmitMenu
