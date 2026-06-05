@@ -12,7 +12,7 @@
 	],
 	"scripts": {
 		"changeset": "changeset",
-		"dev": "bun run dev:prepare && tauri dev",
+		"dev": "bun run dev:prepare && vite build && tauri dev",
 		"dev:prepare": "bun run dev:prepare:sidecar && bun run dev:prepare:cli",
 		"dev:prepare:sidecar": "cd sidecar && bun run dev:prepare",
 		"dev:prepare:cli": "node scripts/stage-dev-cli.mjs",
@@ -104,6 +104,7 @@
 		"lucide-react": "^1.7.0",
 		"monaco-editor": "^0.55.1",
 		"motion": "^12.38.0",
+		"qrcode.react": "^4.2.0",
 		"radix-ui": "^1.4.3",
 		"react": "19.2.0",
 		"react-dom": "19.2.0",

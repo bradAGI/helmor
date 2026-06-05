@@ -1,6 +1,5 @@
 import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
 import { focusManager, QueryClient, queryOptions } from "@tanstack/react-query";
-import { invoke } from "@tauri-apps/api/core";
 import type { ThreadMessageLike } from "./api";
 import {
 	type ActionKind,
@@ -47,6 +46,9 @@ import {
 	type PrSyncState,
 	refreshWorkspaceChangeRequest,
 } from "./api";
+// Routed through the transport shim so query-cache persistence works in the
+// mobile browser companion too (not just the Tauri webview).
+import { invoke } from "./ipc";
 import { parsePrUrl } from "./pr-url";
 import {
 	getSessionThreadPaginationState,
@@ -161,6 +163,7 @@ export const helmorQueryKeys = {
 	slackEmojiMap: (teamId: string) => ["slackEmojiMap", teamId] as const,
 	triageConfig: ["triage", "config"] as const,
 	triageActiveStatus: ["triage", "activeStatus"] as const,
+	pairedDevices: ["pairedDevices"] as const,
 };
 
 /** Persistence is opt-in per `queryOptions` via `meta: { persist: true }`.

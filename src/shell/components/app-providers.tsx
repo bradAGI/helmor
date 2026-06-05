@@ -1,15 +1,19 @@
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
-import type { ComponentType } from "react";
+import { type ComponentType, useState } from "react";
 import { ForgeAccountsHealthSentinel } from "@/components/forge-accounts-health-sentinel";
 import { QuitConfirmDialog } from "@/components/quit-confirm-dialog";
 import { SplashScreen } from "@/components/splash-screen";
 import { AppOnboarding } from "@/features/onboarding";
 import type { SettingsSection } from "@/features/settings";
 import { SettingsDialog } from "@/features/settings";
+import { getPendingPairingToken } from "@/lib/ipc";
 import { helmorQueryPersister, QUERY_CACHE_BUSTER } from "@/lib/query-client";
 import { SettingsContext } from "@/lib/settings";
 import { EMPTY_SESSION_RUN_STATES } from "@/shell/constants";
 import type { AppBootstrap } from "@/shell/hooks/use-app-bootstrap";
+import { useCompanionAuthState } from "@/shell/hooks/use-companion-auth";
+import { CompanionPairingConfirm } from "./companion-pairing-confirm";
+import { CompanionPairingScreen } from "./companion-pairing-screen";
 
 interface AppProvidersProps extends AppBootstrap {
 	AppShell: ComponentType<{
@@ -39,6 +43,10 @@ export function AppProviders({
 	setSettingsInitialSection,
 	AppShell,
 }: AppProvidersProps) {
+	const companionAuth = useCompanionAuthState();
+	// Read once at mount: a scanned `#pair=` token is staged but not yet active.
+	// Cleared by `confirmCompanionPairing`, which reloads (remounting this).
+	const [pendingPairing] = useState(() => getPendingPairingToken());
 	return (
 		<SettingsContext.Provider value={settingsContextValue}>
 			<PersistQueryClientProvider
@@ -48,7 +56,11 @@ export function AppProviders({
 					buster: QUERY_CACHE_BUSTER,
 				}}
 			>
-				{appSettings === null ? null : !appSettings.onboardingCompleted ? (
+				{pendingPairing !== null ? (
+					<CompanionPairingConfirm />
+				) : companionAuth === "unauthed" ? (
+					<CompanionPairingScreen />
+				) : appSettings === null ? null : !appSettings.onboardingCompleted ? (
 					<>
 						<AppOnboarding onComplete={completeOnboarding} />
 						<QuitConfirmDialog sessionRunStates={EMPTY_SESSION_RUN_STATES} />
