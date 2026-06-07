@@ -46,11 +46,14 @@ const codexConfigState = {
 
 class MockCodexAppServer {
 	killed = false;
+	disableMcp: boolean;
 
 	constructor(opts: {
 		onExit: (code: number | null, signal: string | null) => void;
+		disableMcp?: boolean;
 	}) {
 		serverState.onExit = opts.onExit;
+		this.disableMcp = opts.disableMcp ?? false;
 		serverState.instances.push(this);
 	}
 
@@ -237,6 +240,43 @@ describe("CodexAppServerManager", () => {
 			]),
 		);
 		expect(serverState.requests).toEqual([]);
+	});
+
+	test("generateTitle runs on a dedicated app-server with MCP disabled", async () => {
+		const manager = new CodexAppServerManager();
+		const events: unknown[] = [];
+		const titleEmitter = createSidecarEmitter((event) => events.push(event));
+		serverState.beforeTurnCompleted = () => {
+			serverState.onNotification?.({
+				method: "item/agentMessage/delta",
+				params: {
+					delta: "title: 查看 Linear 团队\nbranch: list-linear-teams\n",
+				},
+			});
+		};
+
+		await manager.generateTitle(
+			"REQ-title-codex",
+			"看看 linear 里有哪些 team",
+			null,
+			titleEmitter,
+			30_000,
+		);
+
+		expect(serverState.instances).toHaveLength(1);
+		// The title app-server must never start the user's MCP servers.
+		expect(serverState.instances[0]?.disableMcp).toBe(true);
+		expect(serverState.requests.map((request) => request.method)).toContain(
+			"turn/start",
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				id: "REQ-title-codex",
+				type: "titleGenerated",
+				title: "查看 Linear 团队",
+				branchName: "list-linear-teams",
+			}),
+		);
 	});
 
 	test("forwards service tier when fast mode is enabled for a codex model", async () => {

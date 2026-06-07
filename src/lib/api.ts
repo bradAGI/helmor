@@ -4057,12 +4057,18 @@ export async function generateSessionTitle(
 	sessionId: string,
 	userMessage: string,
 	titleSeed?: string | null,
+	provider?: AgentProvider | null,
 ): Promise<GenerateSessionTitleResponse | null> {
 	try {
 		return await invoke<GenerateSessionTitleResponse>(
 			"generate_session_title",
 			{
-				request: { sessionId, userMessage, titleSeed: titleSeed ?? null },
+				request: {
+					sessionId,
+					userMessage,
+					titleSeed: titleSeed ?? null,
+					provider: provider ?? null,
+				},
 			},
 		);
 	} catch (error) {

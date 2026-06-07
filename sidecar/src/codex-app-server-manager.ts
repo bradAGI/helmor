@@ -1086,6 +1086,11 @@ export class CodexAppServerManager implements SessionManager {
 			binaryPath: CODEX_BIN_PATH,
 			cwd,
 			agentProxy: options?.agentProxy,
+			// Title generation must never start the user's configured MCP
+			// servers: on a new worktree's first turn that races the real
+			// conversation's MCP init and can leave tools (e.g. Linear)
+			// unavailable. This is a throwaway one-shot, so disable MCP.
+			disableMcp: true,
 			onNotification: () => {},
 			onRequest: (req) => {
 				if (APPROVAL_METHODS.has(req.method)) {

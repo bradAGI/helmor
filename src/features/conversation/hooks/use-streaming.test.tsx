@@ -835,6 +835,7 @@ describe("useConversationStreaming", () => {
 			"session-1",
 			"Investigate reconnect failures after restarting the session",
 			"Investigate reconnect failures af...",
+			"codex",
 		);
 		expect(
 			queryClient.getQueryData<Array<{ title: string }>>(
