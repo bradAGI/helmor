@@ -24,6 +24,7 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,9 +32,11 @@ import {
 	claudeCodeArchivePlan,
 	cloudflaredArchivePlan,
 	codexArchivePlan,
+	type DarwinArch,
 	ghArchivePlan,
 	glabArchivePlan,
 	llamaArchivePlan,
+	nodeArchivePlan,
 	opencodeArchivePlan,
 	resolveVendorTarget,
 	type TargetInfo,
@@ -765,6 +768,166 @@ function stageLlamaCppBinaries(target: TargetInfo): string {
 }
 
 // ---------------------------------------------------------------------------
+// Cursor worker — Node runtime + a self-contained @cursor/sdk node_modules.
+// Cursor's SDK can't run on Bun (its HTTP/2 client drops tool traffic in git
+// repos with NGHTTP2_FRAME_SIZE_ERROR), so it runs in a Node child process.
+// The built `cursor-worker.mjs` is copied in by `build.ts`; here we stage the
+// dependency tree it loads at runtime (@cursor/sdk + native sqlite3 + the
+// bundled rg/cursorsandbox in @cursor/sdk-<triple>).
+// ---------------------------------------------------------------------------
+
+// Stage the Node runtime that runs the cursor worker. Release-launched apps
+// have no `node` on PATH, so it must ride along in the bundle. Only the single
+// `node` binary is copied (not the npm/dist tree).
+function stageNodeRuntime(target: TargetInfo): string {
+	const plan = nodeArchivePlan(target);
+	const dest = join(DIST_VENDOR, "node", `node${EXE}`);
+	ensureCacheDir();
+	const archive = join(BUNDLE_CACHE, plan.archiveName);
+	downloadAndVerify(plan.url, archive, plan.sha256);
+	const extractDir = join(BUNDLE_CACHE, `${plan.slug}-extract`);
+	freshExtractDir(extractDir);
+	extractArchive(archive, extractDir);
+	// Unix tarball → `<slug>/bin/node`; Windows zip → `<slug>/node.exe`.
+	const binSrc =
+		target.os === "windows"
+			? join(extractDir, plan.slug, `node${EXE}`)
+			: join(extractDir, plan.slug, "bin", "node");
+	ensureExists(binSrc, "extracted node binary");
+	copyFile(binSrc, dest);
+	chmodSync(dest, 0o755);
+	// V8's JIT needs the same allow-jit / allow-unsigned-executable-memory
+	// entitlements as the Bun binaries under hardened runtime.
+	maybeSignMacBinary(dest, true);
+	return dest;
+}
+
+function readCursorSdkVersion(): string {
+	const pkgJsonPath = join(NODE_MODULES, "@cursor", "sdk", "package.json");
+	ensureExists(pkgJsonPath, "@cursor/sdk package.json");
+	const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8")) as {
+		version?: string;
+	};
+	if (!pkg.version) {
+		throw new Error(`[stage-vendor] @cursor/sdk has no version`);
+	}
+	return pkg.version;
+}
+
+function stageCursorWorkerDeps(target: TargetInfo): string {
+	const version = readCursorSdkVersion();
+	const dest = join(DIST_VENDOR, "cursor-worker");
+	rmSync(dest, { recursive: true, force: true });
+	mkdirSync(dest, { recursive: true });
+	writeFileSync(
+		join(dest, "package.json"),
+		`${JSON.stringify(
+			{
+				name: "helmor-cursor-worker",
+				private: true,
+				dependencies: { "@cursor/sdk": version },
+				// Lets Bun run sqlite3's node-pre-gyp install (fetches the native
+				// addon). Bun trusts sqlite3 by default too, but pin it here so a
+				// future default-list change can't silently ship a worker that
+				// crashes on `require("sqlite3")`.
+				trustedDependencies: ["sqlite3"],
+			},
+			null,
+			2,
+		)}\n`,
+	);
+
+	// Install for the BUNDLE target, not the build host. The macos-26 runner is
+	// arm64 and cross-builds the x86_64 bundle, so a plain `bun install` would
+	// drop arm64 @cursor/sdk-darwin-arm64 (rg/cursorsandbox) + arm64 sqlite3 into
+	// the x64 Node bundle and crash Cursor on Intel. `--cpu/--os` pick the right
+	// platform optional-dep; `npm_config_target_*` make node-pre-gyp fetch/build
+	// the matching sqlite3 native addon.
+	const npmOs = target.os === "windows" ? "win32" : "darwin";
+	const npmArch = target.arch; // "x64" | "arm64"
+	console.log(
+		`[stage-vendor] installing @cursor/sdk@${version} for ${npmOs}-${npmArch} (cursor worker)`,
+	);
+	execFileSync(
+		process.execPath,
+		["install", `--cpu=${npmArch}`, `--os=${npmOs}`],
+		{
+			cwd: dest,
+			stdio: "inherit",
+			env: {
+				...process.env,
+				npm_config_target_arch: npmArch,
+				npm_config_target_platform: npmOs,
+				npm_config_arch: npmArch,
+				npm_config_platform: npmOs,
+			},
+		},
+	);
+
+	verifyCursorWorkerArch(dest, npmOs, npmArch);
+	return dest;
+}
+
+/// Fail the build if the staged cursor-worker deps aren't the bundle target's
+/// architecture — guards against the cross-arch footgun above.
+function verifyCursorWorkerArch(
+	dest: string,
+	npmOs: string,
+	npmArch: DarwinArch,
+): void {
+	const cursorScope = join(dest, "node_modules", "@cursor");
+	const wantPkg = `sdk-${npmOs}-${npmArch}`;
+	if (!existsSync(join(cursorScope, wantPkg))) {
+		throw new Error(
+			`[stage-vendor] cursor worker: platform package @cursor/${wantPkg} not installed — cross-arch resolution failed`,
+		);
+	}
+	// A stray wrong-arch sibling would also get bundled and crash at runtime.
+	const stray = readdirSync(cursorScope).filter(
+		(n) => /^sdk-(darwin|win32|linux)-/.test(n) && n !== wantPkg,
+	);
+	if (stray.length > 0) {
+		throw new Error(
+			`[stage-vendor] cursor worker: unexpected wrong-arch platform package(s): ${stray.join(", ")}`,
+		);
+	}
+	// Darwin: confirm the native sqlite3 addon is the expected Mach-O arch.
+	if (npmOs === "darwin") {
+		const machO = npmArch === "x64" ? "x86_64" : "arm64";
+		const addon = findNodeAddon(join(dest, "node_modules", "sqlite3"));
+		if (!addon) {
+			throw new Error(
+				"[stage-vendor] cursor worker: sqlite3 native addon (.node) not found",
+			);
+		}
+		const info = execFileSync("file", [addon], { encoding: "utf8" });
+		if (!info.includes(machO)) {
+			throw new Error(
+				`[stage-vendor] cursor worker: sqlite3 addon arch mismatch — expected ${machO}, got ${info.trim()}`,
+			);
+		}
+	}
+	console.log(
+		`[stage-vendor] cursor worker deps verified (${npmOs}-${npmArch})`,
+	);
+}
+
+function findNodeAddon(dir: string): string | null {
+	if (!existsSync(dir)) return null;
+	const stack = [dir];
+	while (stack.length > 0) {
+		const cur = stack.pop();
+		if (!cur) break;
+		for (const entry of readdirSync(cur)) {
+			const p = join(cur, entry);
+			if (statSync(p).isDirectory()) stack.push(p);
+			else if (entry.endsWith(".node")) return p;
+		}
+	}
+	return null;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -816,6 +979,14 @@ stageOptional("cloudflared", () => stageCloudflaredBinary(target));
 // ----- llama.cpp (local LLM server for auto-rename / Local AI) -----
 stageOptional("llama-cpp", () => stageLlamaCppBinaries(target));
 
+// ----- Cursor worker deps — release builds only (set by the `build` script).
+// Dev resolves @cursor/sdk from sidecar/node_modules, so `dev:prepare` skips
+// this ~minute-long install. Node runtime is staged separately (see CI). -----
+if (process.env.HELMOR_STAGE_CURSOR_WORKER === "1") {
+	stageNodeRuntime(target);
+	stageCursorWorkerDeps(target);
+}
+
 // ----- Summary -----
 console.log(`[stage-vendor] ✓ staged → ${DIST_VENDOR}`);
 console.log(`  claude-code ${humanSize(join(DIST_VENDOR, "claude-code"))}`);
@@ -825,3 +996,9 @@ console.log(`  gh          ${humanSize(join(DIST_VENDOR, "gh"))}`);
 console.log(`  glab        ${humanSize(join(DIST_VENDOR, "glab"))}`);
 console.log(`  cloudflared ${humanSize(join(DIST_VENDOR, "cloudflared"))}`);
 console.log(`  llama-cpp   ${humanSize(join(DIST_VENDOR, "llama-cpp"))}`);
+if (process.env.HELMOR_STAGE_CURSOR_WORKER === "1") {
+	console.log(`  node        ${humanSize(join(DIST_VENDOR, "node"))}`);
+	console.log(
+		`  cursor-worker ${humanSize(join(DIST_VENDOR, "cursor-worker"))}`,
+	);
+}
