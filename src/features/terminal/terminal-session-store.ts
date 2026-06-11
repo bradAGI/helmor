@@ -46,15 +46,21 @@ export const TRUNCATION_NOTICE =
 const instances = new Map<string, Instance>();
 /** sessionId → live listener (the mounted xterm) */
 const listeners = new Map<string, Listener>();
-/** sessionId → one-shot boot command for a composer-initiated terminal
- * (set before the panel mounts; consumed on first spawn). */
-const pendingBoots = new Map<string, string>();
+export type PendingBoot = {
+	bootCommand: string;
+	/** claude only: rides the injected --settings file (no CLI flag). */
+	fastMode: boolean;
+};
 
-export function setPendingBoot(sessionId: string, bootCommand: string) {
-	pendingBoots.set(sessionId, bootCommand);
+/** sessionId → one-shot boot for a composer-initiated terminal
+ * (set before the panel mounts; consumed on first spawn). */
+const pendingBoots = new Map<string, PendingBoot>();
+
+export function setPendingBoot(sessionId: string, boot: PendingBoot) {
+	pendingBoots.set(sessionId, boot);
 }
 
-export function takePendingBoot(sessionId: string): string | null {
+export function takePendingBoot(sessionId: string): PendingBoot | null {
 	const boot = pendingBoots.get(sessionId) ?? null;
 	pendingBoots.delete(sessionId);
 	return boot;
@@ -76,15 +82,19 @@ function deliver(entry: Instance, data: string) {
 	listeners.get(entry.sessionId)?.onChunk(data);
 }
 
-// claude/codex TUIs enter the alternate screen on startup; everything before
-// that (shell prompt, boot-command echo) is noise we never render.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI alt-screen sequences are ESC-framed.
-const ALT_SCREEN_ENTER_RE = /\x1b\[\?(?:1049|1047|47)h/;
+// TUI startup markers — everything before the first one (shell prompt,
+// boot-command echo) is noise we never render. Verified by capturing both
+// CLIs' boot bytes: claude enters the alternate screen (1049h); codex is an
+// inline ratatui TUI that never does, but it enables focus-event reporting
+// (1004h) and synchronized output (2026h) on startup. A shell's echo phase
+// emits none of these (zsh only toggles bracketed paste, 2004h).
+// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI sequences are ESC-framed.
+const TUI_START_RE = /\x1b\[\?(?:1049|1047|47|2026|1004)h/;
 /** Agent CLIs can take a moment to reach the TUI; past this, show everything
  * (a non-TUI command would otherwise render nothing at all). */
 const BOOT_GATE_TIMEOUT_MS = 3000;
 
-/** Stop gating: emit from `fromIndex` (the alt-screen sequence itself must
+/** Stop gating: emit from `fromIndex` (the TUI start sequence itself must
  * reach xterm) — or everything on a timeout/exit fallback (fromIndex 0). */
 function releaseGate(entry: Instance, fromIndex: number) {
 	const gate = entry.gate;
@@ -102,6 +112,7 @@ export function ensureTerminal(
 	sessionId: string,
 	bootCommand: string | null,
 	agentKind: string | null,
+	fastMode = false,
 ) {
 	if (instances.has(sessionId)) return;
 	const entry: Instance = {
@@ -141,7 +152,7 @@ export function ensureTerminal(
 				case "stderr": {
 					if (current.gate) {
 						current.gate.buf += event.data;
-						const match = ALT_SCREEN_ENTER_RE.exec(current.gate.buf);
+						const match = TUI_START_RE.exec(current.gate.buf);
 						if (match) releaseGate(current, match.index);
 						break;
 					}
@@ -184,6 +195,7 @@ export function ensureTerminal(
 		},
 		bootCommand,
 		agentKind,
+		fastMode,
 	).catch((err) => {
 		const current = instances.get(sessionId);
 		if (!current) return;
@@ -209,6 +221,13 @@ export function detach(sessionId: string) {
 export function writeStdin(sessionId: string, data: string) {
 	const entry = instances.get(sessionId);
 	if (!entry) return;
+	// NOTE: no ESC-keypress interrupt heuristic here. claude's ESC is
+	// overloaded (close menu / clear input / press-twice-to-interrupt), so
+	// keystroke sniffing misfires — and each misfire kicked an IPC +
+	// session-list invalidation whose re-render could break an in-flight IME
+	// composition (typing went dead until a session switch). Interrupts are
+	// hook-driven like ORCA: a real interrupt fires Stop (is_interrupt=true),
+	// which terminal-hook already maps to idle.
 	void writeTerminalStdin(entry.repoId, entry.workspaceId, sessionId, data);
 }
 

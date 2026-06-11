@@ -44,6 +44,10 @@ export type ShellEvent =
 			modelId: string | null;
 			effortLevel: string | null;
 			permissionMode: string | null;
+			addDirs: readonly string[] | null;
+			fastMode: boolean;
+			/** Explicit target; null = the currently selected workspace. */
+			workspaceId: string | null;
 	  };
 
 export type ShellEventType = ShellEvent["type"];

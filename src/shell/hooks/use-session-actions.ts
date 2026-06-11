@@ -125,8 +125,12 @@ export function useSessionActions({
 			// the slot a composer-initiated terminal uses to stage its boot
 			// command ahead of the panel's spawning mount.
 			onCreated?: (sessionId: string) => void,
+			// Explicit target for callers whose workspace may not be selected
+			// yet (start-surface create → finalize → terminal session).
+			workspaceIdOverride?: string | null,
 		) => {
-			const workspaceId = selectionActions.getSnapshot().workspaceId;
+			const workspaceId =
+				workspaceIdOverride ?? selectionActions.getSnapshot().workspaceId;
 			if (!workspaceId) {
 				return;
 			}
@@ -174,11 +178,13 @@ export function useSessionActions({
 						queryKey: helmorQueryKeys.workspaceSessions(workspaceId),
 					}),
 				]);
+				return sessionId;
 			} catch (error) {
 				pushWorkspaceToast(
 					error instanceof Error ? error.message : String(error),
 					"Unable to create session",
 				);
+				return null;
 			}
 		},
 		[handleSelectSession, pushWorkspaceToast, queryClient, selectionActions],
@@ -188,9 +194,19 @@ export function useSessionActions({
 	// TUI with the prompt + composer state as the initial invocation.
 	useShellEvent("create-terminal-session", (event) => {
 		const boot = buildTerminalBootCommand(event.provider, event);
-		void handleCreateSession("terminal", event.provider, (sessionId) => {
-			if (boot) setPendingBoot(sessionId, boot);
-		});
+		void handleCreateSession(
+			"terminal",
+			event.provider,
+			(sessionId) => {
+				if (boot) {
+					setPendingBoot(sessionId, {
+						bootCommand: boot,
+						fastMode: event.fastMode,
+					});
+				}
+			},
+			event.workspaceId,
+		);
 	});
 
 	useEffect(() => {

@@ -533,6 +533,16 @@ export const WorkspaceConversationContainer = memo(
 				pendingCreatedWorkspaceSubmit.id;
 
 			void (async () => {
+				// Terminal-Mode start sends were fully handled at prepare time
+				// (the session was converted in place and its boot staged) —
+				// just consume so no GUI turn is streamed into it.
+				const { payload } = pendingCreatedWorkspaceSubmit;
+				if (payload.terminalMode) {
+					onPendingCreatedWorkspaceSubmitConsumed?.(
+						pendingCreatedWorkspaceSubmit.id,
+					);
+					return;
+				}
 				// `payload.workingDirectory` is patched by App.tsx with the
 				// cwd returned from prepare/finalize, so the first turn never
 				// races the workspaceDetail React Query — no need to fall
