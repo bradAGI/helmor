@@ -6,6 +6,7 @@ import { resolveCssColor } from "@/lib/css-color";
 import { openUrl } from "@/lib/platform-bridge";
 import { useSettings } from "@/lib/settings";
 import "@xterm/xterm/css/xterm.css";
+import { createTerminalImeGuard } from "./terminal-ime";
 import {
 	clearTerminalWrites,
 	disposeTerminalWrites,
@@ -368,8 +369,14 @@ function TerminalOutputImpl({
 		// visible terminals hold a GPU context — Chromium/WKWebView cap the
 		// number of live contexts, and N background terminals would exhaust it.
 
+		// WKWebView IME quirks: dropped full-width commits, lost composition
+		// commits, pinyin segmentation spaces. See terminal-ime.ts.
+		const ime = createTerminalImeGuard((data) => onDataRef.current?.(data));
+		if (terminal.textarea) ime.attach(terminal.textarea);
+
 		// Translate macOS Cmd combos to readline control codes.
 		terminal.attachCustomKeyEventHandler((event) => {
+			ime.observeKeyEvent(event);
 			if (event.type !== "keydown") return true;
 			if (!event.metaKey || event.ctrlKey || event.altKey) return true;
 
@@ -445,7 +452,7 @@ function TerminalOutputImpl({
 		// the key → byte translation (e.g. Ctrl+C → `\x03`), we just
 		// forward whatever it produced.
 		const dataSub = terminal.onData((data) => {
-			onDataRef.current?.(data);
+			onDataRef.current?.(ime.filterData(data));
 		});
 
 		// xterm fires onResize after FitAddon changes the grid, font size
@@ -553,6 +560,7 @@ function TerminalOutputImpl({
 			}
 			dataSub.dispose();
 			resizeSub.dispose();
+			ime.detach();
 			linkProviderDisposable?.dispose();
 			themeObserver.disconnect();
 			resizeObserver.disconnect();
