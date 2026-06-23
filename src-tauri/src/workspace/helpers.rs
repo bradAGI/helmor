@@ -929,7 +929,6 @@ mod tests {
             active_run_action_id: None,
             kind: "manual".to_string(),
             ai_priming_consumed: false,
-            triage_source_type: None,
             parent_workspace_id: None,
             custom_name: None,
         }
